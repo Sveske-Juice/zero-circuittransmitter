@@ -1,12 +1,18 @@
-SOURCE:=$(shell find $(pwd) -name *.c)
+CFLAGS=-Wall -I/usr/include/gpiod
+LDFLAGS=-lwiringPi
 
-# Include all source files
-all: $(SOURCE)
-	mkdir -p build/ && \
-	bear -- gcc -o ./build/zeroct -Wall $(SOURCE) -lgpiod
+all: zeroct
 
+zeroct: main.o
+	mkdir -p build
+	$(CC) -o build/zeroct main.o $(LDFLAGS)
 
-# Run this to deploy on RPi
+main.o: src/main.c
+	bear -- $(CC) -c $(CFLAGS) src/main.c -o main.o
+
 deploy:
 	git pull
-	$(MAKE) all
+	$(MAKE) zeroct
+
+clean:
+	rm -rf build/*.o
