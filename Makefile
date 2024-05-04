@@ -1,5 +1,5 @@
 CFLAGS=-Wall -I/usr/include/gpiod
-LDFLAGS=-lwiringPi
+LDFLAGS=-lwiringPi -lpaho-mqtt3c
 
 all: zeroct
 
@@ -15,4 +15,4 @@ deploy:
 	$(MAKE) zeroct
 
 clean:
-	rm -rf build/*.o
+	rm -rf *.o
