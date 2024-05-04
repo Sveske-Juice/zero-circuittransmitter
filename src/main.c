@@ -1,5 +1,7 @@
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include <wiringPi.h>
 #include <MQTTClient.h>
 
@@ -8,12 +10,34 @@
 #define TOPIC "DDU4"
 #define TIMEOUT 10000L
 
+#define IN0 7
+#define IN1 0
+#define IN2 2
+#define IN3 3
+
+uint8_t circuitStatus = 0;
+
+MQTTClient client;
+MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
+MQTTClient_message pubmsg = MQTTClient_message_initializer;
+MQTTClient_deliveryToken token;
+
+uint8_t getCircuitState() {
+    uint8_t newState = digitalRead(IN0);
+    newState |= digitalRead(IN1) << 1;
+    newState |= digitalRead(IN2) << 2;
+    newState |= digitalRead(IN3) << 3;
+
+    return newState;
+}
+
 int main(int argc, char *argv[])
 {
-    MQTTClient client;
-    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
-    MQTTClient_message pubmsg = MQTTClient_message_initializer;
-    MQTTClient_deliveryToken token;
+    pinMode(IN0, INPUT);
+    pinMode(IN1, INPUT);
+    pinMode(IN2, INPUT);
+    pinMode(IN3, INPUT);
+
     int rc;
 
     if ((rc = MQTTClient_create(&client, ADDRESS, CLIENTID,
@@ -39,27 +63,35 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    for (;;) {
+        uint8_t newCircuitState = getCircuitState();
 
-    const char * payload = "HEELOO";
-    pubmsg.payload = (void*)payload;
-    pubmsg.payloadlen = (int)strlen(payload);
-    pubmsg.qos = 1;
-    pubmsg.retained = 0;
-    if ((rc = MQTTClient_publishMessage(client, TOPIC, &pubmsg, &token)) != MQTTCLIENT_SUCCESS)
-    {
-         printf("Failed to publish message, return code %d\n", rc);
-         exit(EXIT_FAILURE);
+        // Something changed... we should notify subscribers
+        if (circuitStatus != newCircuitState) {
+            circuitStatus = newCircuitState;
+            printf("state: %d\n", newCircuitState);
+            const char * payload = "HEELOO";
+            pubmsg.payload = (void*)payload;
+            pubmsg.payloadlen = (int)strlen(payload);
+            pubmsg.qos = 1;
+            pubmsg.retained = 0;
+            if ((rc = MQTTClient_publishMessage(client, TOPIC, &pubmsg, &token)) != MQTTCLIENT_SUCCESS)
+            {
+                printf("Failed to publish message, return code %d\n", rc);
+                exit(EXIT_FAILURE);
+            }
+
+            printf("Waiting for up to %d seconds for publication of %s\n"
+                    "on topic %s for client with ClientID: %s\n",
+                    (int)(TIMEOUT/1000), payload, TOPIC, CLIENTID);
+            rc = MQTTClient_waitForCompletion(client, token, TIMEOUT);
+            printf("Message with delivery token %d delivered\n", token);
+
+            if ((rc = MQTTClient_disconnect(client, 10000)) != MQTTCLIENT_SUCCESS)
+                printf("Failed to disconnect, return code %d\n", rc);
+            MQTTClient_destroy(&client);
+        }
     }
-
-    printf("Waiting for up to %d seconds for publication of %s\n"
-            "on topic %s for client with ClientID: %s\n",
-            (int)(TIMEOUT/1000), payload, TOPIC, CLIENTID);
-    rc = MQTTClient_waitForCompletion(client, token, TIMEOUT);
-    printf("Message with delivery token %d delivered\n", token);
-
-    if ((rc = MQTTClient_disconnect(client, 10000)) != MQTTCLIENT_SUCCESS)
-    	printf("Failed to disconnect, return code %d\n", rc);
-    MQTTClient_destroy(&client);
 
     return EXIT_SUCCESS;
 }
