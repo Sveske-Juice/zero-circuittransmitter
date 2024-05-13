@@ -15,6 +15,8 @@
 #define ADDRESS "tcp://mqtt.eclipseprojects.io:1883"
 #define CLIENTID "KMG-DDU4-DigiLogi"
 #define INIT_TOPIC "DDU4/init"
+#define EVAL_ROW_TOPIC "DDU4/evalrow"
+#define STATE_TOPIC "DDU4/state"
 #define QOS 1
 #define TIMEOUT 10000L
 
@@ -29,6 +31,10 @@ uint8_t circuitStatus = 0;
 char statePayloadBuf[9];
 
 MQTTClient_deliveryToken deliveredtoken;
+MQTTClient client;
+MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
+MQTTClient_message pubmsg = MQTTClient_message_initializer;
+MQTTClient_deliveryToken token;
 
 uint8_t getCircuitState() {
     uint8_t newState = digitalRead(IN0);
@@ -82,10 +88,6 @@ int main(int argc, char *argv[])
     pinMode(IN2, INPUT);
     pinMode(IN3, INPUT);
 
-    MQTTClient client;
-    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
-    MQTTClient_message pubmsg = MQTTClient_message_initializer;
-    MQTTClient_deliveryToken token;
     int rc;
 
     if ((rc = MQTTClient_create(&client, ADDRESS, CLIENTID,
@@ -113,6 +115,14 @@ int main(int argc, char *argv[])
 	MQTTClient_destroy(&client);
 	return rc;
     }
+    printf("Subscribing to topic %s\nfor client %s using QoS%d\n\n"
+           , EVAL_ROW_TOPIC, CLIENTID, QOS);
+    if ((rc = MQTTClient_subscribe(client, EVAL_ROW_TOPIC, QOS)) != MQTTCLIENT_SUCCESS)
+    {
+        printf("Failed to subscribe, return code %d\n", rc);
+        rc = EXIT_FAILURE;
+    }
+
     char *ip = getLocalIPv4();
     pubmsg.payload = ip;
     pubmsg.payloadlen = (int)strlen(ip);
@@ -132,14 +142,50 @@ int main(int argc, char *argv[])
             ip, INIT_TOPIC, CLIENTID);
         while (deliveredtoken != token)
         {
-                        #if defined(_WIN32)
-                                Sleep(100);
-                        #else
-                                usleep(10000L);
-                        #endif
+		usleep(10000L);
         }
     }
  
+
+    // Main loop
+    do
+    {
+	    uint8_t newCircuitState = getCircuitState();
+	    // Something changed... we should notify subscribers
+	    if (circuitStatus != newCircuitState) {
+		    circuitStatus = newCircuitState;
+		    printState(circuitStatus);
+		    printf("state: %s\n", statePayloadBuf);
+
+		    pubmsg.payload = statePayloadBuf;
+		    pubmsg.payloadlen = (int)strlen(statePayloadBuf);
+		    pubmsg.qos = QOS;
+		    pubmsg.retained = 0;
+		    if ((rc = MQTTClient_publishMessage(client, STATE_TOPIC, &pubmsg, &token)) != MQTTCLIENT_SUCCESS)
+		    {
+			    printf("Failed to publish message, return code %d\n", rc);
+			    exit(EXIT_FAILURE);
+		    }
+		    else
+		    {
+			    printf("Waiting for publication of %s\n"
+					    "on topic %s for client with ClientID: %s\n",
+					    ip, STATE_TOPIC, CLIENTID);
+			    while (deliveredtoken != token)
+			    {
+				    usleep(10000L);
+			    }
+		    }
+
+	    }
+    } while (1);
+
+    if ((rc = MQTTClient_unsubscribe(client, EVAL_ROW_TOPIC)) != MQTTCLIENT_SUCCESS)
+    {
+	    printf("Failed to unsubscribe, return code %d\n", rc);
+	    rc = EXIT_FAILURE;
+    }
+
     if ((rc = MQTTClient_disconnect(client, 10000)) != MQTTCLIENT_SUCCESS)
     {
         printf("Failed to disconnect, return code %d\n", rc);
