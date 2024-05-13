@@ -1,13 +1,21 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <string.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/types.h>
 #include <wiringPi.h>
 #include <MQTTClient.h>
 
 #define ADDRESS "tcp://mqtt.eclipseprojects.io:1883"
-#define CLIENTID "MUHAHAH"
-#define TOPIC "DDU4"
+#define CLIENTID "KMG-DDU4-DigiLogi"
+#define INIT_TOPIC "DDU4/init"
+#define QOS 1
 #define TIMEOUT 10000L
 
 #define IN0 7
@@ -15,13 +23,12 @@
 #define IN2 2
 #define IN3 3
 
+char* getLocalIPv4();
+
 uint8_t circuitStatus = 0;
 char statePayloadBuf[9];
 
-MQTTClient client;
-MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
-MQTTClient_message pubmsg = MQTTClient_message_initializer;
-MQTTClient_deliveryToken token;
+MQTTClient_deliveryToken deliveredtoken;
 
 uint8_t getCircuitState() {
     uint8_t newState = digitalRead(IN0);
@@ -44,6 +51,28 @@ char* printState(uint8_t state) {
     return statePayloadBuf;
 }
 
+void delivered(void *context, MQTTClient_deliveryToken dt)
+{
+    printf("Message with token value %d delivery confirmed\n", dt);
+    deliveredtoken = dt;
+}
+
+int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_message *message)
+{
+    printf("Message arrived\n");
+    printf("     topic: %s\n", topicName);
+    printf("   message: %.*s\n", message->payloadlen, (char*)message->payload);
+    MQTTClient_freeMessage(&message);
+    MQTTClient_free(topicName);
+    return 1;
+}
+
+void connlost(void *context, char *cause)
+{
+    printf("\nConnection lost\n");
+    printf("     cause: %s\n", cause);
+}
+
 int main(int argc, char *argv[])
 {
     wiringPiSetup();
@@ -53,6 +82,10 @@ int main(int argc, char *argv[])
     pinMode(IN2, INPUT);
     pinMode(IN3, INPUT);
 
+    MQTTClient client;
+    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
+    MQTTClient_message pubmsg = MQTTClient_message_initializer;
+    MQTTClient_deliveryToken token;
     int rc;
 
     if ((rc = MQTTClient_create(&client, ADDRESS, CLIENTID,
@@ -62,51 +95,82 @@ int main(int argc, char *argv[])
          exit(EXIT_FAILURE);
     }
 
+    if ((rc = MQTTClient_setCallbacks(client, NULL, connlost, msgarrvd, delivered)) != MQTTCLIENT_SUCCESS)
+    {
+        printf("Failed to set callbacks, return code %d\n", rc);
+        rc = EXIT_FAILURE;
+	MQTTClient_destroy(&client);
+	return rc;
+    }
+ 
     conn_opts.keepAliveInterval = 20;
-    // conn_opts.cleansession = 1;
-    MQTTClient_SSLOptions sslOpts;
-    sslOpts.verify = 0;
-    // sslOpts.struct_version = 5;
-    sslOpts.enableServerCertAuth = 0;
-    // conn_opts.reliable = 1;
-    // conn_opts.struct_version = 4;
-    conn_opts.ssl = &sslOpts;
+    conn_opts.cleansession = 1;
     printf("Connecting...\n");
     if ((rc = MQTTClient_connect(client, &conn_opts)) != MQTTCLIENT_SUCCESS)
     {
         printf("Failed to connect, return code %d\n", rc);
-        exit(EXIT_FAILURE);
+        rc = EXIT_FAILURE;
+	MQTTClient_destroy(&client);
+	return rc;
     }
+    char *ip = getLocalIPv4();
+    pubmsg.payload = ip;
+    pubmsg.payloadlen = (int)strlen(ip);
+    pubmsg.qos = QOS;
+    pubmsg.retained = 0;
+    deliveredtoken = 0;
 
-    for (;;) {
-        uint8_t newCircuitState = getCircuitState();
-
-        // Something changed... we should notify subscribers
-        if (circuitStatus != newCircuitState) {
-            circuitStatus = newCircuitState;
-            printState(circuitStatus);
-            printf("state: %s\n", statePayloadBuf);
-
-            pubmsg.payload = statePayloadBuf;
-            pubmsg.payloadlen = (int)strlen(statePayloadBuf);
-            pubmsg.qos = 1;
-            pubmsg.retained = 0;
-            if ((rc = MQTTClient_publishMessage(client, TOPIC, &pubmsg, &token)) != MQTTCLIENT_SUCCESS)
-            {
-                printf("Failed to publish message, return code %d\n", rc);
-                exit(EXIT_FAILURE);
-            }
-
-            printf("Waiting for up to %d seconds for publication of %s\n"
-                    "on topic %s for client with ClientID: %s\n",
-                    (int)(TIMEOUT/1000), statePayloadBuf, TOPIC, CLIENTID);
-            rc = MQTTClient_waitForCompletion(client, token, TIMEOUT);
-            printf("Message with delivery token %d delivered\n", token);
+    if ((rc = MQTTClient_publishMessage(client, INIT_TOPIC, &pubmsg, &token)) != MQTTCLIENT_SUCCESS)
+    {
+        printf("Failed to publish message, return code %d\n", rc);
+        rc = EXIT_FAILURE;
+    }
+    else
+    {
+        printf("Waiting for publication of %s\n"
+            "on topic %s for client with ClientID: %s\n",
+            ip, INIT_TOPIC, CLIENTID);
+        while (deliveredtoken != token)
+        {
+                        #if defined(_WIN32)
+                                Sleep(100);
+                        #else
+                                usleep(10000L);
+                        #endif
         }
     }
+ 
     if ((rc = MQTTClient_disconnect(client, 10000)) != MQTTCLIENT_SUCCESS)
+    {
         printf("Failed to disconnect, return code %d\n", rc);
-    MQTTClient_destroy(&client);
+        rc = EXIT_FAILURE;
+    }
 
-    return EXIT_SUCCESS;
+    return rc;
+}
+
+char* getLocalIPv4() {
+    struct ifaddrs *addrs, *tmp;
+    char* ipv4_address = NULL;
+
+    // Get list of interface addresses
+    if (getifaddrs(&addrs) == -1) {
+        perror("getifaddrs");
+        return NULL;
+    }
+
+    // Iterate through the list of addresses
+    for (tmp = addrs; tmp != NULL; tmp = tmp->ifa_next) {
+        // Check if it's an IPv4 address and not loopback
+        if (tmp->ifa_addr != NULL && tmp->ifa_addr->sa_family == AF_INET && strcmp(tmp->ifa_name, "lo") != 0) {
+            struct sockaddr_in *pAddr = (struct sockaddr_in *)tmp->ifa_addr;
+            ipv4_address = strdup(inet_ntoa(pAddr->sin_addr));
+            break; // Only take the first non-loopback IPv4 address
+        }
+    }
+
+    // Free memory
+    freeifaddrs(addrs);
+
+    return ipv4_address;
 }
