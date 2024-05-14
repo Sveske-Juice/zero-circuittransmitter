@@ -14,9 +14,10 @@
 
 #define ADDRESS "tcp://mqtt.eclipseprojects.io:1883"
 #define CLIENTID "KMG-DDU4-DigiLogi"
-#define INIT_TOPIC "DDU4/init"
-#define EVAL_ROW_TOPIC "DDU4/evalrow"
-#define STATE_TOPIC "DDU4/state"
+#define INIT_TOPIC "DDU4/DigitalLogik/init"
+#define EVAL_ROW_TOPIC "DDU4/DigitalLogik/testrequest"
+#define EVAL_RES_TOPIC "DDU4/DigitalLogik/testresult"
+#define STATE_TOPIC "DDU4/DigitalLogik/state"
 #define QOS 1
 #define TIMEOUT 10000L
 
@@ -35,6 +36,8 @@ MQTTClient client;
 MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
 MQTTClient_message pubmsg = MQTTClient_message_initializer;
 MQTTClient_deliveryToken token;
+
+int rc;
 
 uint8_t getCircuitState() {
     uint8_t newState = digitalRead(IN0);
@@ -65,12 +68,65 @@ void delivered(void *context, MQTTClient_deliveryToken dt)
 
 int msgarrvd(void *context, char *topicName, int topicLen, MQTTClient_message *message)
 {
-    printf("Message arrived\n");
-    printf("     topic: %s\n", topicName);
-    printf("   message: %.*s\n", message->payloadlen, (char*)message->payload);
-    MQTTClient_freeMessage(&message);
-    MQTTClient_free(topicName);
-    return 1;
+	printf("Message arrived\n");
+	printf("     topic: %s\n", topicName);
+	printf("   message: %.*s\n", message->payloadlen, (char*)message->payload);
+	char *payload = message->payload;
+	switch (payload[0]){
+		// test request
+		case 'r':
+			uint8_t tableRows[16];
+			char currentStateBuf[4];
+			currentStateBuf[3] = '\0';
+			int rowIdx = 0;
+			int currentStateIdx = 0;
+			for (int i = 1; i < message->payloadlen; i++) {
+				if (payload[i] == ' ') {
+					printf("%s\n", currentStateBuf);
+					tableRows[rowIdx++] = atoi(currentStateBuf);
+
+					currentStateIdx = 0;
+					currentStateBuf[0] = 0;
+					currentStateBuf[1] = 0;
+					currentStateBuf[2] = 0;
+					continue;
+				}
+				currentStateBuf[currentStateIdx++] = payload[i];
+			}
+			tableRows[rowIdx++] = atoi(currentStateBuf);
+			for (int i = 0; i < rowIdx; i++) {
+				printf("%d ", tableRows[i]);
+				// Perform test
+
+				usleep(1000000L);
+
+				// Return result
+				char *payload = "SUCCESS";
+				pubmsg.payload = payload;
+				pubmsg.payloadlen = (int)strlen(payload);
+				pubmsg.qos = QOS;
+				pubmsg.retained = 0;
+				deliveredtoken = 0;
+				if ( MQTTClient_publishMessage(client, EVAL_RES_TOPIC, &pubmsg, &token) != MQTTCLIENT_SUCCESS)
+				{
+					printf("Failed to publish message, return code %d\n", rc);
+					rc = EXIT_FAILURE;
+					return rc;
+				}
+				else
+				{
+					while (deliveredtoken != token)
+					{
+						usleep(10000L);
+					}
+				}
+			}
+			printf("\n");
+			break;
+	}
+	MQTTClient_freeMessage(&message);
+	MQTTClient_free(topicName);
+	return 1;
 }
 
 void connlost(void *context, char *cause)
@@ -82,13 +138,12 @@ void connlost(void *context, char *cause)
 int main(int argc, char *argv[])
 {
     wiringPiSetup();
-    pinMode(IN0, INPUT);
-    pullUpDnControl(IN0, PUD_DOWN);
-    pinMode(IN1, INPUT);
-    pinMode(IN2, INPUT);
-    pinMode(IN3, INPUT);
+    //pinMode(IN0, INPUT);
+    //pullUpDnControl(IN0, PUD_DOWN);
+    //pinMode(IN1, INPUT);
+    //pinMode(IN2, INPUT);
+    //pinMode(IN3, INPUT);
 
-    int rc;
 
     if ((rc = MQTTClient_create(&client, ADDRESS, CLIENTID,
         MQTTCLIENT_PERSISTENCE_NONE, NULL)) != MQTTCLIENT_SUCCESS)
