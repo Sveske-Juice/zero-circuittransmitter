@@ -25,11 +25,15 @@
 #define IN1 0
 #define IN2 2
 #define IN3 3
+#define OUT0 1
+#define OUT1 4
+#define OUT2 28
+#define OUT3 29
 
 char* getLocalIPv4();
 
 uint8_t circuitStatus = 0;
-char statePayloadBuf[9];
+char statePayloadBuf[18];
 
 MQTTClient_deliveryToken deliveredtoken;
 MQTTClient client;
@@ -44,19 +48,17 @@ uint8_t getCircuitState() {
     newState |= digitalRead(IN1) << 1;
     newState |= digitalRead(IN2) << 2;
     newState |= digitalRead(IN3) << 3;
+    newState |= digitalRead(OUT0) << 4;
+    newState |= digitalRead(OUT1) << 5;
+    newState |= digitalRead(OUT2) << 6;
+    newState |= digitalRead(OUT3) << 7;
 
     return newState;
 }
 
 char* printState(uint8_t state) {
-    int bitPos = 0;
-    for (int i = 1 << 7; i != 0; i = i >> 1) {
-        if ((state & i) > 0)
-            statePayloadBuf[bitPos++] = '1';
-        else
-            statePayloadBuf[bitPos++] = '0';
-    }
-    statePayloadBuf[8] = '\0';
+    statePayloadBuf[0] = 's';
+    snprintf(statePayloadBuf, 5, "s%d\n", state);
     return statePayloadBuf;
 }
 
@@ -138,11 +140,16 @@ void connlost(void *context, char *cause)
 int main(int argc, char *argv[])
 {
     wiringPiSetup();
-    //pinMode(IN0, INPUT);
-    //pullUpDnControl(IN0, PUD_DOWN);
-    //pinMode(IN1, INPUT);
-    //pinMode(IN2, INPUT);
-    //pinMode(IN3, INPUT);
+    pinMode(IN0, INPUT);
+    pullUpDnControl(IN0, PUD_DOWN);
+    pinMode(IN1, INPUT);
+    pinMode(IN2, INPUT);
+    pinMode(IN3, INPUT);
+
+    pinMode(OUT0, INPUT);
+    pinMode(OUT1, INPUT);
+    pinMode(OUT2, INPUT);
+    pinMode(OUT3, INPUT);
 
 
     if ((rc = MQTTClient_create(&client, ADDRESS, CLIENTID,
